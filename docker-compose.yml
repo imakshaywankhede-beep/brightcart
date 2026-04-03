@@ -1,0 +1,42 @@
+services:
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=postgresql://brightcart:password@postgres:5432/brightcart
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://brightcart:password@postgres:5432/brightcart
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=brightcart
+      - POSTGRES_USER=brightcart
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"

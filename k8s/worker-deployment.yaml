@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: brightcart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: 340825716875.dkr.ecr.eu-central-1.amazonaws.com/brightcart/worker:latest
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: POLL_INTERVAL_MS
+          value: "5000"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 250m
+            memory: 256Mi
