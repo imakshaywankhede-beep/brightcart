@@ -17,8 +17,6 @@ pipeline {
             }
         }
 
-        }
-
         stage('Configure AWS') {
             steps {
                 withCredentials([
