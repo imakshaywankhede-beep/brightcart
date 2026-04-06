@@ -41,7 +41,7 @@ pipeline {
                       --name ${CLUSTER_NAME} \
                       --region ${AWS_REGION} \
                       --nodegroup-name brightcart-nodes \
-                      --node-type t3.medium \
+                      --node-type t3.micro \
                       --nodes 2
                 else
                     echo "Cluster already exists. Skipping creation."
