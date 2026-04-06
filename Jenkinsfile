@@ -17,23 +17,6 @@ pipeline {
             }
         }
 
-        stage('Install Tools') {
-            steps {
-                sh '''
-                # Install kubectl
-                if ! command -v kubectl &> /dev/null; then
-                  curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.29.0/2024-01-04/bin/linux/amd64/kubectl
-                  chmod +x kubectl
-                  sudo mv kubectl /usr/local/bin/
-                fi
-
-                # Install eksctl
-                if ! command -v eksctl &> /dev/null; then
-                  curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz
-                  sudo mv eksctl /usr/local/bin
-                fi
-                '''
-            }
         }
 
         stage('Configure AWS') {
