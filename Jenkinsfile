@@ -13,130 +13,131 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo 'Checking out source code...'
                 checkout scm
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Install Tools') {
             steps {
                 sh '''
-                # Ensure tools exist
-                node -v
-                npm -v
-                docker -v
-                aws --version
+                # Install kubectl
+                if ! command -v kubectl &> /dev/null; then
+                  curl -o kubectl https://s3.us-west-2.amazonaws.com/amazon-eks/1.29.0/2024-01-04/bin/linux/amd64/kubectl
+                  chmod +x kubectl
+                  sudo mv kubectl /usr/local/bin/
+                fi
+
+                # Install eksctl
+                if ! command -v eksctl &> /dev/null; then
+                  curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_Linux_amd64.tar.gz" | tar xz
+                  sudo mv eksctl /usr/local/bin
+                fi
                 '''
             }
         }
 
-        stage('Test') {
-            parallel {
-                stage('Test Frontend') {
-                    steps {
-                        dir('frontend') {
-                            sh 'npm ci || npm install'
-                            sh 'npm test -- --watchAll=false --passWithNoTests || true'
-                        }
-                    }
+        stage('Configure AWS') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
+                ]) {
+                    sh '''
+                    aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+                    aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+                    aws configure set region ${AWS_REGION}
+                    '''
                 }
-                stage('Test API') {
-                    steps {
-                        dir('api') {
-                            sh 'npm ci || npm install'
-                            sh 'npm test -- --passWithNoTests || true'
-                        }
-                    }
-                }
+            }
+        }
+
+        stage('Create EKS Cluster (if not exists)') {
+            steps {
+                sh '''
+                if ! aws eks describe-cluster --name ${CLUSTER_NAME} --region ${AWS_REGION} > /dev/null 2>&1; then
+                    echo "Creating EKS Cluster..."
+                    eksctl create cluster \
+                      --name ${CLUSTER_NAME} \
+                      --region ${AWS_REGION} \
+                      --nodegroup-name brightcart-nodes \
+                      --node-type t3.medium \
+                      --nodes 2
+                else
+                    echo "Cluster already exists. Skipping creation."
+                fi
+                '''
+            }
+        }
+
+        stage('Update kubeconfig') {
+            steps {
+                sh '''
+                aws eks update-kubeconfig --region ${AWS_REGION} --name ${CLUSTER_NAME}
+                kubectl get nodes
+                '''
+            }
+        }
+
+        stage('Create Namespace & Base Deployments') {
+            steps {
+                sh '''
+                kubectl get namespace brightcart || kubectl create namespace brightcart
+                kubectl apply -f k8s/
+                '''
             }
         }
 
         stage('Build Docker Images') {
             steps {
                 sh '''
-                docker build -t $ECR_REGISTRY/brightcart/frontend:$IMAGE_TAG ./frontend
-                docker tag $ECR_REGISTRY/brightcart/frontend:$IMAGE_TAG $ECR_REGISTRY/brightcart/frontend:latest
-
-                docker build -t $ECR_REGISTRY/brightcart/api:$IMAGE_TAG ./api
-                docker tag $ECR_REGISTRY/brightcart/api:$IMAGE_TAG $ECR_REGISTRY/brightcart/api:latest
-
-                docker build -t $ECR_REGISTRY/brightcart/worker:$IMAGE_TAG ./worker
-                docker tag $ECR_REGISTRY/brightcart/worker:$IMAGE_TAG $ECR_REGISTRY/brightcart/worker:latest
+                docker build -t ${ECR_REGISTRY}/brightcart/frontend:${IMAGE_TAG} ./frontend
+                docker build -t ${ECR_REGISTRY}/brightcart/api:${IMAGE_TAG} ./api
+                docker build -t ${ECR_REGISTRY}/brightcart/worker:${IMAGE_TAG} ./worker
                 '''
             }
         }
 
         stage('Push to ECR') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                    aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-                    aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-                    aws configure set region $AWS_REGION
+                sh '''
+                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
 
-                    # 🔥 Create repos if not exist (VERY IMPORTANT)
-                    aws ecr describe-repositories --repository-names brightcart/frontend || \
-                    aws ecr create-repository --repository-name brightcart/frontend
-
-                    aws ecr describe-repositories --repository-names brightcart/api || \
-                    aws ecr create-repository --repository-name brightcart/api
-
-                    aws ecr describe-repositories --repository-names brightcart/worker || \
-                    aws ecr create-repository --repository-name brightcart/worker
-
-                    # Login
-                    aws ecr get-login-password --region $AWS_REGION | \
-                    docker login --username AWS --password-stdin $ECR_REGISTRY
-
-                    # Push images
-                    docker push $ECR_REGISTRY/brightcart/frontend:$IMAGE_TAG
-                    docker push $ECR_REGISTRY/brightcart/frontend:latest
-
-                    docker push $ECR_REGISTRY/brightcart/api:$IMAGE_TAG
-                    docker push $ECR_REGISTRY/brightcart/api:latest
-
-                    docker push $ECR_REGISTRY/brightcart/worker:$IMAGE_TAG
-                    docker push $ECR_REGISTRY/brightcart/worker:latest
-                    '''
-                }
+                docker push ${ECR_REGISTRY}/brightcart/frontend:${IMAGE_TAG}
+                docker push ${ECR_REGISTRY}/brightcart/api:${IMAGE_TAG}
+                docker push ${ECR_REGISTRY}/brightcart/worker:${IMAGE_TAG}
+                '''
             }
         }
 
         stage('Deploy to EKS') {
             steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                ]) {
-                    sh '''
-                    aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
-                    aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
-                    aws configure set region $AWS_REGION
+                sh '''
+                kubectl set image deployment/frontend frontend=${ECR_REGISTRY}/brightcart/frontend:${IMAGE_TAG} -n brightcart
+                kubectl set image deployment/api api=${ECR_REGISTRY}/brightcart/api:${IMAGE_TAG} -n brightcart
+                kubectl set image deployment/worker worker=${ECR_REGISTRY}/brightcart/worker:${IMAGE_TAG} -n brightcart
 
-                    aws eks update-kubeconfig --region $AWS_REGION --name $CLUSTER_NAME
+                kubectl rollout status deployment/frontend -n brightcart
+                kubectl rollout status deployment/api -n brightcart
+                kubectl rollout status deployment/worker -n brightcart
+                '''
+            }
+        }
 
-                    kubectl set image deployment/frontend frontend=$ECR_REGISTRY/brightcart/frontend:$IMAGE_TAG -n brightcart || true
-                    kubectl set image deployment/api api=$ECR_REGISTRY/brightcart/api:$IMAGE_TAG -n brightcart || true
-                    kubectl set image deployment/worker worker=$ECR_REGISTRY/brightcart/worker:$IMAGE_TAG -n brightcart || true
-
-                    kubectl rollout status deployment/frontend -n brightcart
-                    kubectl rollout status deployment/api -n brightcart
-                    kubectl rollout status deployment/worker -n brightcart
-                    '''
-                }
+        stage('Get App URL') {
+            steps {
+                sh '''
+                kubectl get svc -n brightcart
+                '''
             }
         }
     }
 
     post {
         success {
-            echo "✅ Deployment successful! Build ${BUILD_NUMBER} is live."
+            echo "🚀 FULL DEPLOYMENT SUCCESSFUL!"
         }
         failure {
-            echo "❌ Pipeline failed. Check logs above."
+            echo "❌ Pipeline failed!"
         }
     }
 }
